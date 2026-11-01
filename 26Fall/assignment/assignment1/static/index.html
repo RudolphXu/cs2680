@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code Web</title>
+<!-- Markdown renderer + HTML sanitizer (small libraries from a CDN, allowed by SPEC §2) -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --text: #1f1f1f;
+    --muted: #6b6b6b;
+    --border: #e2e2de;
+    --code-bg: #f1f1ee;
+    --accent: #c15f3c;
+    --pending: #b7791f;
+    --pending-bg: #fdf6e7;
+    --ok: #2f855a;
+    --ok-bg: #edf7f1;
+    --err: #c53030;
+    --err-bg: #fdeeee;
+    --sub: #6b5bd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b1a;
+      --panel: #252524;
+      --text: #ececea;
+      --muted: #9a9a96;
+      --border: #3a3a38;
+      --code-bg: #2f2f2d;
+      --accent: #e08a65;
+      --pending: #e3b25a;
+      --pending-bg: #3a3122;
+      --ok: #6cc596;
+      --ok-bg: #1f3329;
+      --err: #f08080;
+      --err-bg: #3d2323;
+      --sub: #a79cf0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+
+  /* ---------- top bar ---------- */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  }
+  header h1 { font-size: 16px; margin: 0; margin-right: 8px; }
+  .control { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  select, button { font: inherit; font-size: 14px; }
+  select { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+  button.primary {
+    padding: 5px 16px; border: 0; border-radius: 6px;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* run status badge */
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px; font-size: 13px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .badge.running  { color: var(--pending); background: var(--pending-bg); border-color: transparent; }
+  .badge.running::before { animation: pulse 1s infinite; }
+  .badge.finished { color: var(--ok); background: var(--ok-bg); border-color: transparent; }
+  .badge.failed   { color: var(--err); background: var(--err-bg); border-color: transparent; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  /* ---------- main column ---------- */
+  main { max-width: 920px; margin: 0 auto; padding: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
+  }
+  #session { display: none; font-size: 13px; color: var(--muted); }
+  #session .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #session b { color: var(--text); font-weight: 500; }
+  #empty { color: var(--muted); text-align: center; padding: 48px 0; }
+  .error-box { color: var(--err); background: var(--err-bg); border-color: transparent; }
+
+  /* assistant text (markdown) */
+  .msg { padding: 2px 4px; margin: 10px 0; overflow-wrap: anywhere; }
+  .msg > :first-child { margin-top: 0; }
+  .msg > :last-child { margin-bottom: 0; }
+  .msg pre { background: var(--code-bg); padding: 10px; border-radius: 6px; overflow-x: auto; }
+  .msg :not(pre) > code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+  .msg table { border-collapse: collapse; }
+  .msg th, .msg td { border: 1px solid var(--border); padding: 4px 8px; }
+
+  /* events that came from a subagent (step 2 will nest these as a tree) */
+  .from-sub { border-left: 3px solid var(--sub); padding-left: 10px; margin-left: 4px; }
+  .sub-tag { font-size: 11px; color: var(--sub); display: block; margin-bottom: 2px; }
+
+  /* tool call card */
+  .tool { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; overflow: hidden; }
+  .tool-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
+  .tool-name { font-weight: 600; }
+  .tool-key {
+    flex: 1 1 200px; min-width: 0; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tool-status { font-size: 12px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .tool.pending { border-left: 4px solid var(--pending); }
+  .tool.pending .tool-status { color: var(--pending); background: var(--pending-bg); }
+  .tool.ok { border-left: 4px solid var(--ok); }
+  .tool.ok .tool-status { color: var(--ok); background: var(--ok-bg); }
+  .tool.error { border-left: 4px solid var(--err); }
+  .tool.error .tool-status { color: var(--err); background: var(--err-bg); }
+  .tool.error .tool-result pre { color: var(--err); }
+  .tool details { border-top: 1px solid var(--border); }
+  .tool summary { cursor: pointer; padding: 4px 12px; font-size: 12px; color: var(--muted); }
+  .tool details pre, .tool-result pre {
+    margin: 0; padding: 8px 12px; background: var(--code-bg);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow-y: auto;
+  }
+  .tool-result { border-top: 1px solid var(--border); }
+  .tool-result:empty { display: none; }
+  .fold-btn {
+    display: block; width: 100%; text-align: left; border: 0; border-top: 1px dashed var(--border);
+    background: var(--code-bg); color: var(--accent); padding: 4px 12px; cursor: pointer; font-size: 12px;
+  }
+
+  /* quiet events: system notices, unknown types */
+  .quiet { color: var(--muted); font-size: 12px; margin: 4px 0; padding-left: 4px; }
+  body:not(.show-quiet) .quiet { display: none; }
+  details.quiet-block { font-size: 13px; color: var(--muted); margin: 8px 0; }
+  details.quiet-block pre { white-space: pre-wrap; background: var(--code-bg); padding: 8px; border-radius: 6px; max-height: 300px; overflow: auto; }
+
+  /* final numbers */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat .label { font-size: 12px; color: var(--muted); }
+  .stat .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat.wide { grid-column: 1 / -1; }
+  .stat.wide .value { font-size: 13px; font-weight: 400; font-family: ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
+  .result-title { margin: 0 0 10px; font-size: 15px; }
+  .result-title.ok { color: var(--ok); }
+  .result-title.failed { color: var(--err); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Claude Code Web</h1>
+
+  <div class="control">
+    <label>模式
+      <select id="mode">
+        <option value="replay" selected>回放（samples/）</option>
+        <option value="live" disabled>实时（第 3 步实现）</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="control" id="sample-control">
+    <label>样例文件 <select id="sample"></select></label>
+  </div>
+
+  <button class="primary" id="run-btn">Run</button>
+  <span class="badge" id="run-status">空闲</span>
+
+  <label class="control hint"><input type="checkbox" id="show-quiet"> 显示系统事件</label>
+</header>
+
+<main>
+  <div class="card" id="session"></div>
+  <div id="log"><div id="empty">选择一个样例文件，点击 Run 开始回放。</div></div>
+  <div id="stats-slot"></div>
+</main>
+
+<script>
+/* =====================================================================
+ * Small helpers
+ * ===================================================================== */
+
+const $ = (sel) => document.querySelector(sel);
+
+/** Create an element: el("div", {class: "x"}, "text", childNode, ...) */
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null) continue;
+    node.append(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+
+/** Markdown -> safe HTML. Falls back to plain text if the CDN didn't load. */
+function renderMarkdown(text) {
+  const box = el("div", { class: "msg" });
+  if (window.marked && window.DOMPurify) {
+    box.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  } else {
+    box.style.whiteSpace = "pre-wrap";
+    box.textContent = text;
+  }
+  return box;
+}
+
+function formatDuration(ms) {
+  if (ms == null) return "—";
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} 秒`;
+  const m = Math.floor(s / 60);
+  return `${m} 分 ${Math.round(s - m * 60)} 秒`;
+}
+
+function formatCost(usd) {
+  return usd == null ? "—" : `$${Number(usd).toFixed(4)}`;
+}
+
+/* =====================================================================
+ * Tool calls: key input and result text
+ * ===================================================================== */
+
+/** The one input field worth showing in the tool card header (SPEC §6.2). */
+function keyInput(name, input) {
+  input = input || {};
+  switch (name) {
+    case "Read": case "Edit": case "Write": case "MultiEdit":
+      return input.file_path;
+    case "NotebookEdit":
+      return input.notebook_path;
+    case "Bash":
+      return input.command;
+    case "Grep": case "Glob":
+      return input.path ? `${input.pattern}   (in ${input.path})` : input.pattern;
+    case "Task": case "Agent":
+      return input.description;
+    case "WebSearch":
+      return input.query;
+    case "WebFetch":
+      return input.url;
+  }
+  // Unknown tool: show the first short string field, if any.
+  for (const v of Object.values(input)) {
+    if (typeof v === "string") return v;
+  }
+  return "";
+}
+
+/** tool_result.content may be a string or a list of blocks (SPEC §5). */
+function resultText(content) {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((b) => {
+      if (b.type === "text") return b.text;
+      if (b.type === "image") return "[图片]";
+      return JSON.stringify(b, null, 2);
+    }).join("\n");
+  }
+  return JSON.stringify(content, null, 2);
+}
+
+const PREVIEW_LINES = 12;
+
+/** A <pre> showing the first lines, with a "N more lines" toggle for the rest. */
+function foldedPre(text) {
+  const wrap = el("div");
+  const lines = text.replace(/\n+$/, "").split("\n");
+  const pre = el("pre");
+  wrap.append(pre);
+
+  if (lines.length <= PREVIEW_LINES) {
+    pre.textContent = text || "（无输出）";
+    return wrap;
+  }
+  const hidden = lines.length - PREVIEW_LINES;
+  const short = lines.slice(0, PREVIEW_LINES).join("\n");
+  let open = false;
+  pre.textContent = short;
+  const btn = el("button", { class: "fold-btn", text: `▸ 还有 ${hidden} 行` });
+  btn.onclick = () => {
+    open = !open;
+    pre.textContent = open ? lines.join("\n") : short;
+    btn.textContent = open ? "▾ 收起" : `▸ 还有 ${hidden} 行`;
+  };
+  wrap.append(btn);
+  return wrap;
+}
+
+/* =====================================================================
+ * Run state
+ * ===================================================================== */
+
+let source = null;          // the EventSource of the current run
+let toolCards = new Map();  // tool_use id -> { card, status, result }
+let gotResult = false;      // did we see the final `result` event?
+
+function setRunStatus(kind, label) {
+  const b = $("#run-status");
+  b.className = "badge " + kind;
+  b.textContent = label;
+  $("#run-btn").disabled = kind === "running";
+}
+
+function resetView() {
+  toolCards = new Map();
+  gotResult = false;
+  $("#log").innerHTML = "";
+  $("#stats-slot").innerHTML = "";
+  $("#session").style.display = "none";
+  $("#session").innerHTML = "";
+}
+
+/** Where an event's elements go. Step 2 will return the subagent's section here. */
+function containerFor(ev) {
+  return $("#log");
+}
+
+/** Append a node; mark it if it came from a subagent. Keeps the view scrolled to the bottom. */
+function append(ev, node) {
+  if (ev.parent_tool_use_id) {
+    const parent = toolCards.get(ev.parent_tool_use_id);
+    const label = parent ? `子代理 · ${parent.label}` : "子代理";
+    node = el("div", { class: "from-sub" + (node.classList.contains("quiet") ? " quiet" : "") },
+      el("span", { class: "sub-tag", text: label }), node);
+  }
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+  containerFor(ev).append(node);
+  if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+function quiet(ev, text) {
+  append(ev, el("div", { class: "quiet mono", text }));
+}
+
+/* =====================================================================
+ * Event handlers — one per event type in SPEC §5
+ * ===================================================================== */
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case "system":     return handleSystem(ev);
+    case "assistant":  return handleAssistant(ev);
+    case "user":       return handleUser(ev);
+    case "result":     return handleResult(ev);
+    case "_parse_error":
+      return quiet(ev, `无法解析第 ${ev.line} 行：${ev.raw.slice(0, 120)}`);
+    default:
+      // rate_limit_event and anything unknown: shown quietly, never breaks the page.
+      return quiet(ev, `[${ev.type ?? "未知事件"}]`);
+  }
+}
+
+function handleSystem(ev) {
+  if (ev.subtype === "init") {
+    const s = $("#session");
+    s.innerHTML = "";
+    s.append(
+      el("div", { class: "row" }, "会话 ", el("b", { class: "mono", text: ev.session_id || "—" })),
+      el("div", { class: "row" }, "模型 ", el("b", { text: ev.model || "—" }), "　目录 ", el("b", { class: "mono", text: ev.cwd || "—" })),
+    );
+    s.style.display = "block";
+    return;
+  }
+  if (ev.subtype === "thinking_tokens") return; // pure noise
+  const extra = ev.description || ev.status || "";
+  quiet(ev, `[system · ${ev.subtype}] ${extra}`);
+}
+
+function handleAssistant(ev) {
+  for (const block of ev.message?.content ?? []) {
+    if (block.type === "text" && block.text) {
+      append(ev, renderMarkdown(block.text));
+    } else if (block.type === "tool_use") {
+      append(ev, makeToolCard(block));
+    } else if (block.type === "thinking") {
+      if (block.thinking) {
+        append(ev, el("details", { class: "quiet-block" },
+          el("summary", { text: "思考过程" }), el("pre", { text: block.thinking })));
+      }
+    } else {
+      quiet(ev, `[assistant 内容块 · ${block.type}]`);
+    }
+  }
+}
+
+function handleUser(ev) {
+  const content = ev.message?.content;
+  if (typeof content === "string") {
+    append(ev, el("details", { class: "quiet-block" }, el("summary", { text: "用户消息" }), el("pre", { text: content })));
+    return;
+  }
+  for (const block of content ?? []) {
+    if (block.type === "tool_result") {
+      attachResult(ev, block);
+    } else if (block.type === "text") {
+      // In the samples this is the task prompt handed to a subagent.
+      const title = ev.parent_tool_use_id ? "子代理收到的任务" : "用户消息";
+      append(ev, el("details", { class: "quiet-block" }, el("summary", { text: title }), el("pre", { text: block.text })));
+    }
+  }
+}
+
+function makeToolCard(block) {
+  const key = keyInput(block.name, block.input) || "";
+  const status = el("span", { class: "tool-status", text: "运行中…" });
+  const result = el("div", { class: "tool-result" });
+  const card = el("div", { class: "tool pending", id: `tool-${block.id}` },
+    el("div", { class: "tool-head" },
+      el("span", { class: "tool-name", text: block.name }),
+      el("code", { class: "tool-key", text: key, title: key }),
+      status,
+    ),
+    el("details", {},
+      el("summary", { text: "完整输入" }),
+      el("pre", { text: JSON.stringify(block.input, null, 2) }),
+    ),
+    result,
+  );
+  toolCards.set(block.id, { card, status, result, label: `${block.name}: ${key}`.slice(0, 60) });
+  return card;
+}
+
+function attachResult(ev, block) {
+  const entry = toolCards.get(block.tool_use_id);
+  const text = resultText(block.content);
+  const isError = block.is_error === true;
+
+  if (!entry) {
+    // A result whose tool call we never saw. Show it anyway.
+    append(ev, el("details", { class: "quiet-block" },
+      el("summary", { text: `工具结果（未找到对应调用 ${block.tool_use_id}）` }), el("pre", { text })));
+    return;
+  }
+  entry.card.classList.remove("pending");
+  entry.card.classList.add(isError ? "error" : "ok");
+  entry.status.textContent = isError ? "错误" : "成功";
+  entry.result.innerHTML = "";
+  entry.result.append(foldedPre(text));
+}
+
+function handleResult(ev) {
+  gotResult = true;
+  const failed = ev.is_error === true || ev.subtype !== "success";
+
+  const stat = (label, value, wide = false) =>
+    el("div", { class: "stat" + (wide ? " wide" : "") },
+      el("div", { class: "label", text: label }), el("div", { class: "value", text: value }));
+
+  const card = el("div", { class: "card" },
+    el("h3", { class: "result-title " + (failed ? "failed" : "ok"),
+               text: failed ? `运行失败（${ev.subtype}）` : "运行完成" }),
+    el("div", { class: "stats" },
+      stat("费用", formatCost(ev.total_cost_usd)),
+      stat("耗时", formatDuration(ev.duration_ms)),
+      stat("轮数", String(ev.num_turns ?? "—")),
+      stat("会话 ID", ev.session_id || "—", true),
+    ),
+  );
+  $("#stats-slot").append(card);
+  setRunStatus(failed ? "failed" : "finished", failed ? "失败" : "完成");
+}
+
+/** Stream is over: mark tool calls that never got a result, and catch runs with no `result`. */
+function finishRun(errorMessage) {
+  if (source) { source.close(); source = null; }
+  for (const { card, status } of toolCards.values()) {
+    if (card.classList.contains("pending")) {
+      card.classList.remove("pending");
+      card.classList.add("error");
+      status.textContent = "无结果";
+    }
+  }
+  if (!gotResult) {
+    const msg = errorMessage || "事件流已结束，但没有收到 result 事件。";
+    $("#stats-slot").append(el("div", { class: "card error-box", text: msg }));
+    setRunStatus("failed", "失败");
+  }
+}
+
+/* =====================================================================
+ * Starting a run
+ * ===================================================================== */
+
+function startReplay() {
+  const file = $("#sample").value;
+  if (!file) return;
+  if (source) source.close();
+  resetView();
+  setRunStatus("running", "进行中");
+
+  // EventSource = the browser's built-in SSE client.
+  source = new EventSource(`/api/replay?file=${encodeURIComponent(file)}`);
+
+  source.onmessage = (msg) => {
+    let ev;
+    try { ev = JSON.parse(msg.data); } catch { return; }
+    try { handleEvent(ev); }
+    catch (err) { console.error("render error", err, ev); quiet(ev, `渲染出错：${err.message}`); }
+  };
+  source.addEventListener("end", () => finishRun());
+  source.onerror = () => {
+    // Fires if the server is unreachable, the file is missing, or the stream drops mid-run.
+    finishRun("与服务器的连接中断（或回放文件不存在）。");
+  };
+}
+
+async function loadSamples() {
+  const select = $("#sample");
+  try {
+    const res = await fetch("/api/samples");
+    const names = await res.json();
+    select.innerHTML = "";
+    for (const n of names) select.append(el("option", { value: n, text: n }));
+  } catch {
+    select.append(el("option", { value: "", text: "（无法读取样例列表）" }));
+  }
+}
+
+$("#run-btn").onclick = startReplay;
+$("#show-quiet").onchange = (e) => document.body.classList.toggle("show-quiet", e.target.checked);
+loadSamples();
+</script>
+</body>
+</html>
