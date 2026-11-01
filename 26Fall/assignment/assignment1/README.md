@@ -2,7 +2,7 @@
 
 A local web page that shows Claude Code's JSON event stream. See `SPEC.md`.
 
-Current progress: step 1 (replay mode plus basic rendering). Live mode is not built yet.
+Current progress: steps 1–2 (replay mode, rendering, tree view and outline). Live mode is not built yet.
 
 ## Setup (once)
 

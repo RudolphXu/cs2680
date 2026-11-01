@@ -84,7 +84,60 @@
   @keyframes pulse { 50% { opacity: .25; } }
 
   /* ---------- main column ---------- */
-  main { max-width: 920px; margin: 0 auto; padding: 16px; }
+  /* ---------- page layout: outline (left) + dialogue (right) ---------- */
+  .layout {
+    display: grid; grid-template-columns: 240px minmax(0, 1fr);
+    gap: 20px; max-width: 1240px; margin: 0 auto; padding: 16px;
+  }
+  main { min-width: 0; max-width: 920px; }
+
+  /* outline = table of contents of tool calls */
+  #outline {
+    position: sticky; top: calc(var(--header-h, 56px) + 16px);
+    align-self: start;
+    max-height: calc(100vh - var(--header-h, 56px) - 32px); overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 8px; font-size: 13px;
+  }
+  #outline h2 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 6px 6px; }
+  #outline ol { list-style: none; margin: 0; padding: 0; }
+  #outline ol ol { margin-left: 10px; padding-left: 8px; border-left: 2px solid var(--sub); }
+  #outline .empty-outline { color: var(--muted); padding: 4px 6px; }
+  .ol-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 3px 6px; border: 0; border-radius: 5px; background: none;
+    color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  }
+  .ol-item:hover { background: var(--code-bg); }
+  .ol-item .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .ol-item.pending .dot { background: var(--pending); animation: pulse 1s infinite; }
+  .ol-item.ok .dot { background: var(--ok); }
+  .ol-item.error .dot { background: var(--err); }
+  .ol-item .ol-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #outline-btn { display: none; }
+
+  /* narrow window: the outline folds into a drawer opened by the "目录" button */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    #outline-btn { display: inline-block; }
+    #outline {
+      position: fixed; z-index: 20; top: var(--header-h, 56px); left: 0; bottom: 0;
+      width: min(280px, 85vw); max-height: none; border-radius: 0;
+      align-self: stretch; /* fill top-to-bottom; "start" would shrink it to its content */
+      box-shadow: 4px 0 16px rgba(0,0,0,.15);
+      transform: translateX(-105%); transition: transform .2s;
+    }
+    body.outline-open #outline { transform: none; }
+  }
+  button.ghost {
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--text); cursor: pointer;
+  }
+
+  /* briefly highlight the card the outline jumped to */
+  .tool { scroll-margin-top: calc(var(--header-h, 56px) + 16px); }
+  .tool.flash { box-shadow: 0 0 0 3px var(--accent); transition: box-shadow .3s; }
   .card {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
@@ -104,9 +157,13 @@
   .msg table { border-collapse: collapse; }
   .msg th, .msg td { border: 1px solid var(--border); padding: 4px 8px; }
 
-  /* events that came from a subagent (step 2 will nest these as a tree) */
-  .from-sub { border-left: 3px solid var(--sub); padding-left: 10px; margin-left: 4px; }
-  .sub-tag { font-size: 11px; color: var(--sub); display: block; margin-bottom: 2px; }
+  /* subagent section, nested inside the Agent/Task tool card that spawned it */
+  .tool details.subagent { border-top: 1px solid var(--border); }
+  .tool details.subagent > summary { color: var(--sub); font-weight: 500; font-size: 13px; padding: 6px 12px; }
+  .subagent-body {
+    margin: 0 12px 10px 14px; padding-left: 12px;
+    border-left: 3px solid var(--sub);
+  }
 
   /* tool call card */
   .tool { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; overflow: hidden; }
@@ -176,13 +233,22 @@
   <span class="badge" id="run-status">空闲</span>
 
   <label class="control hint"><input type="checkbox" id="show-quiet"> 显示系统事件</label>
+  <button class="ghost" id="outline-btn">目录</button>
 </header>
+
+<div class="layout">
+<nav id="outline" aria-label="工具调用目录">
+  <h2>工具调用</h2>
+  <ol id="outline-list"></ol>
+  <div class="empty-outline" id="outline-empty">还没有工具调用</div>
+</nav>
 
 <main>
   <div class="card" id="session"></div>
   <div id="log"><div id="empty">选择一个样例文件，点击 Run 开始回放。</div></div>
   <div id="stats-slot"></div>
 </main>
+</div>
 
 <script>
 /* =====================================================================
@@ -306,7 +372,14 @@ function foldedPre(text) {
  * ===================================================================== */
 
 let source = null;          // the EventSource of the current run
-let toolCards = new Map();  // tool_use id -> { card, status, result }
+/*
+ * toolCards: tool_use id -> entry. One entry per tool call:
+ *   card, status, result   the card's DOM nodes
+ *   subSlot                where this call's subagent section goes (Agent/Task only)
+ *   sub                    { details, summary, body, calls } once a subagent event arrives
+ *   olItem, olChildren     its line in the outline, and the nested list for its subagent's calls
+ */
+let toolCards = new Map();
 let gotResult = false;      // did we see the final `result` event?
 
 function setRunStatus(kind, label) {
@@ -323,24 +396,88 @@ function resetView() {
   $("#stats-slot").innerHTML = "";
   $("#session").style.display = "none";
   $("#session").innerHTML = "";
+  $("#outline-list").innerHTML = "";
+  $("#outline-empty").style.display = "";
 }
 
-/** Where an event's elements go. Step 2 will return the subagent's section here. */
-function containerFor(ev) {
-  return $("#log");
-}
+/* ---------- the tree ---------- */
 
-/** Append a node; mark it if it came from a subagent. Keeps the view scrolled to the bottom. */
-function append(ev, node) {
-  if (ev.parent_tool_use_id) {
-    const parent = toolCards.get(ev.parent_tool_use_id);
-    const label = parent ? `子代理 · ${parent.label}` : "子代理";
-    node = el("div", { class: "from-sub" + (node.classList.contains("quiet") ? " quiet" : "") },
-      el("span", { class: "sub-tag", text: label }), node);
+/** The collapsible subagent section inside an Agent/Task card, created on first use. */
+function ensureSubagent(entry) {
+  if (!entry.sub) {
+    const summary = el("summary");
+    const body = el("div", { class: "subagent-body" });
+    const details = el("details", { class: "subagent", open: "" }, summary, body);
+    entry.subSlot.append(details);
+    entry.sub = { details, summary, body, calls: 0 };
+    updateSubSummary(entry);
   }
+  return entry.sub;
+}
+
+function updateSubSummary(entry) {
+  const s = entry.sub;
+  s.summary.textContent = `子代理：${entry.key || entry.name}（${s.calls} 次工具调用）`;
+}
+
+/**
+ * Where an event's elements go (SPEC §6.7).
+ * Main agent (parent_tool_use_id = null) -> the top-level list.
+ * Subagent -> the section inside the tool call that spawned it. This also works
+ * for a subagent of a subagent, because that tool call's card is itself nested.
+ */
+function containerFor(ev) {
+  const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
+  return parent ? ensureSubagent(parent).body : $("#log");
+}
+
+/** Append a node where it belongs. Keeps the view scrolled to the bottom while the run streams. */
+function append(ev, node) {
   const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
   containerFor(ev).append(node);
   if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+/* ---------- the outline ---------- */
+
+function addOutlineItem(ev, entry, id) {
+  const btn = el("button", { class: "ol-item pending", title: entry.key || entry.name },
+    el("span", { class: "dot" }), el("span", { class: "ol-name", text: entry.name }));
+  btn.onclick = () => jumpTo(id);
+  const li = el("li", {}, btn);
+  entry.olItem = btn;
+
+  // A subagent's calls are listed under the Agent/Task call that spawned them.
+  const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
+  let list = $("#outline-list");
+  if (parent) {
+    if (!parent.olChildren) {
+      parent.olChildren = el("ol");
+      parent.olItem.parentElement.append(parent.olChildren);
+    }
+    list = parent.olChildren;
+  }
+  list.append(li);
+  $("#outline-empty").style.display = "none";
+}
+
+function setOutlineStatus(entry, kind) {
+  if (!entry.olItem) return;
+  entry.olItem.classList.remove("pending", "ok", "error");
+  entry.olItem.classList.add(kind);
+}
+
+/** Scroll to a tool card, opening any collapsed subagent sections around it first. */
+function jumpTo(id) {
+  const { card } = toolCards.get(id) ?? {};
+  if (!card) return;
+  for (let d = card.parentElement.closest("details"); d; d = d.parentElement.closest("details")) {
+    d.open = true;
+  }
+  document.body.classList.remove("outline-open"); // close the drawer on narrow windows
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+  card.classList.add("flash");
+  setTimeout(() => card.classList.remove("flash"), 1200);
 }
 
 function quiet(ev, text) {
@@ -386,7 +523,7 @@ function handleAssistant(ev) {
     if (block.type === "text" && block.text) {
       append(ev, renderMarkdown(block.text));
     } else if (block.type === "tool_use") {
-      append(ev, makeToolCard(block));
+      append(ev, makeToolCard(ev, block));
     } else if (block.type === "thinking") {
       if (block.thinking) {
         append(ev, el("details", { class: "quiet-block" },
@@ -415,9 +552,10 @@ function handleUser(ev) {
   }
 }
 
-function makeToolCard(block) {
+function makeToolCard(ev, block) {
   const key = keyInput(block.name, block.input) || "";
   const status = el("span", { class: "tool-status", text: "运行中…" });
+  const subSlot = el("div");
   const result = el("div", { class: "tool-result" });
   const card = el("div", { class: "tool pending", id: `tool-${block.id}` },
     el("div", { class: "tool-head" },
@@ -429,9 +567,18 @@ function makeToolCard(block) {
       el("summary", { text: "完整输入" }),
       el("pre", { text: JSON.stringify(block.input, null, 2) }),
     ),
+    subSlot,   // subagent section goes here, between the input and the final result
     result,
   );
-  toolCards.set(block.id, { card, status, result, label: `${block.name}: ${key}`.slice(0, 60) });
+  const entry = { card, status, subSlot, result, name: block.name, key };
+  toolCards.set(block.id, entry);
+  addOutlineItem(ev, entry, block.id);
+
+  const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
+  if (parent) {
+    ensureSubagent(parent).calls++;
+    updateSubSummary(parent);
+  }
   return card;
 }
 
@@ -449,6 +596,7 @@ function attachResult(ev, block) {
   entry.card.classList.remove("pending");
   entry.card.classList.add(isError ? "error" : "ok");
   entry.status.textContent = isError ? "错误" : "成功";
+  setOutlineStatus(entry, isError ? "error" : "ok");
   entry.result.innerHTML = "";
   entry.result.append(foldedPre(text));
 }
@@ -478,11 +626,12 @@ function handleResult(ev) {
 /** Stream is over: mark tool calls that never got a result, and catch runs with no `result`. */
 function finishRun(errorMessage) {
   if (source) { source.close(); source = null; }
-  for (const { card, status } of toolCards.values()) {
-    if (card.classList.contains("pending")) {
-      card.classList.remove("pending");
-      card.classList.add("error");
-      status.textContent = "无结果";
+  for (const entry of toolCards.values()) {
+    if (entry.card.classList.contains("pending")) {
+      entry.card.classList.remove("pending");
+      entry.card.classList.add("error");
+      entry.status.textContent = "无结果";
+      setOutlineStatus(entry, "error");
     }
   }
   if (!gotResult) {
@@ -533,6 +682,14 @@ async function loadSamples() {
 
 $("#run-btn").onclick = startReplay;
 $("#show-quiet").onchange = (e) => document.body.classList.toggle("show-quiet", e.target.checked);
+$("#outline-btn").onclick = () => document.body.classList.toggle("outline-open");
+
+// The header can wrap to two lines; keep the sticky outline and scroll targets just below it.
+function syncHeaderHeight() {
+  document.documentElement.style.setProperty("--header-h", $("header").offsetHeight + "px");
+}
+window.addEventListener("resize", syncHeaderHeight);
+syncHeaderHeight();
 loadSamples();
 </script>
 </body>
