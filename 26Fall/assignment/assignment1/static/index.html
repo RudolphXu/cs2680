@@ -147,6 +147,37 @@
   #session b { color: var(--text); font-weight: 500; }
   #empty { color: var(--muted); text-align: center; padding: 48px 0; }
   .error-box { color: var(--err); background: var(--err-bg); border-color: transparent; }
+  .error-box h3 { margin: 0 0 6px; font-size: 15px; }
+  .error-box p { margin: 0 0 6px; overflow-wrap: anywhere; }
+  .error-box pre {
+    margin: 6px 0 0; padding: 8px; border-radius: 6px; background: var(--panel); color: var(--text);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto;
+  }
+
+  /* composer: mode, prompt, working directory, Run */
+  #composer { display: flex; flex-direction: column; gap: 10px; }
+  .mode-switch { display: flex; gap: 16px; font-size: 14px; }
+  .mode-switch label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  #composer textarea, #composer input[type=text] {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  #composer textarea { resize: vertical; min-height: 64px; }
+  #composer input[type=text] { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  #composer textarea:disabled, #composer input:disabled { opacity: .6; }
+  .live-only { display: flex; flex-direction: column; gap: 8px; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .replay-only .field { flex-direction: row; align-items: center; gap: 8px; }
+  #composer.mode-replay .live-only, #composer.mode-live .replay-only { display: none; }
+  .composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+  .form-error { color: var(--err); font-size: 13px; }
+
+  /* the prompt of the current run, echoed into the dialogue */
+  .user-prompt {
+    background: var(--code-bg); border-radius: 10px; padding: 10px 14px; margin: 12px 0;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .user-prompt .who { font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px; }
 
   /* assistant text (markdown) */
   .msg { padding: 2px 4px; margin: 10px 0; overflow-wrap: anywhere; }
@@ -215,21 +246,6 @@
 
 <header>
   <h1>Claude Code Web</h1>
-
-  <div class="control">
-    <label>模式
-      <select id="mode">
-        <option value="replay" selected>回放（samples/）</option>
-        <option value="live" disabled>实时（第 3 步实现）</option>
-      </select>
-    </label>
-  </div>
-
-  <div class="control" id="sample-control">
-    <label>样例文件 <select id="sample"></select></label>
-  </div>
-
-  <button class="primary" id="run-btn">Run</button>
   <span class="badge" id="run-status">空闲</span>
 
   <label class="control hint"><input type="checkbox" id="show-quiet"> 显示系统事件</label>
@@ -244,8 +260,34 @@
 </nav>
 
 <main>
+  <!-- Where a run is set up and started -->
+  <form class="card" id="composer" autocomplete="off">
+    <div class="mode-switch" role="radiogroup" aria-label="模式">
+      <label><input type="radio" name="mode" value="live" checked> 实时</label>
+      <label><input type="radio" name="mode" value="replay"> 回放</label>
+    </div>
+
+    <div class="live-only">
+      <textarea id="prompt" rows="3" placeholder="要让 Claude Code 做什么？（⌘/Ctrl + Enter 运行）"></textarea>
+      <label class="field">工作目录
+        <input id="cwd" class="mono" type="text" spellcheck="false"
+               placeholder="~/projects/cs2680-sandbox/practice_asign1">
+      </label>
+    </div>
+
+    <div class="replay-only">
+      <label class="field">样例文件 <select id="sample"></select></label>
+    </div>
+
+    <div class="composer-actions">
+      <span class="form-error" id="form-error"></span>
+      <button class="primary" id="run-btn" type="submit">Run</button>
+    </div>
+  </form>
+
+  <div id="run-prompt"></div>
   <div class="card" id="session"></div>
-  <div id="log"><div id="empty">选择一个样例文件，点击 Run 开始回放。</div></div>
+  <div id="log"><div id="empty">填写提示词和工作目录，点击 Run。</div></div>
   <div id="stats-slot"></div>
 </main>
 </div>
@@ -381,18 +423,28 @@ let source = null;          // the EventSource of the current run
  */
 let toolCards = new Map();
 let gotResult = false;      // did we see the final `result` event?
+let resultFailed = false;   // ...and did it report a failure?
+let resultCard = null;      // the card showing the result's numbers
+let runEnded = false;       // finishRun already ran for this run
 
+/** Run-level status (SPEC §6.4): running / finished / failed. Locks the form while running. */
 function setRunStatus(kind, label) {
   const b = $("#run-status");
   b.className = "badge " + kind;
   b.textContent = label;
-  $("#run-btn").disabled = kind === "running";
+  const running = kind === "running";
+  for (const c of $("#composer").querySelectorAll("button, input, textarea, select")) c.disabled = running;
+  $("#run-btn").textContent = running ? "运行中…" : "Run";
 }
 
 function resetView() {
   toolCards = new Map();
   gotResult = false;
+  resultFailed = false;
+  resultCard = null;
+  runEnded = false;
   $("#log").innerHTML = "";
+  $("#run-prompt").innerHTML = "";
   $("#stats-slot").innerHTML = "";
   $("#session").style.display = "none";
   $("#session").innerHTML = "";
@@ -431,11 +483,22 @@ function containerFor(ev) {
   return parent ? ensureSubagent(parent).body : $("#log");
 }
 
-/** Append a node where it belongs. Keeps the view scrolled to the bottom while the run streams. */
+/** Append a node where it belongs. */
 function append(ev, node) {
-  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
   containerFor(ev).append(node);
-  if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+/*
+ * Follow the bottom of the page while a run streams, like a terminal.
+ * `following` only changes when the user scrolls: scroll up to read something
+ * and the page stops jumping; scroll back to the bottom and it follows again.
+ */
+let following = true;
+window.addEventListener("scroll", () => {
+  following = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 80;
+});
+function followBottom() {
+  if (following) window.scrollTo(0, document.documentElement.scrollHeight);
 }
 
 /* ---------- the outline ---------- */
@@ -603,15 +666,19 @@ function attachResult(ev, block) {
 
 function handleResult(ev) {
   gotResult = true;
+  // SPEC §5: a run failed if is_error is true or subtype is anything but "success".
   const failed = ev.is_error === true || ev.subtype !== "success";
+  resultFailed = failed;
 
   const stat = (label, value, wide = false) =>
     el("div", { class: "stat" + (wide ? " wide" : "") },
       el("div", { class: "label", text: label }), el("div", { class: "value", text: value }));
 
-  const card = el("div", { class: "card" },
+  const card = el("div", { class: "card" + (failed ? " error-box" : "") },
     el("h3", { class: "result-title " + (failed ? "failed" : "ok"),
                text: failed ? `运行失败（${ev.subtype}）` : "运行完成" }),
+    // On failure, `result` usually holds the error message.
+    failed && ev.result ? el("p", { text: String(ev.result) }) : null,
     el("div", { class: "stats" },
       stat("费用", formatCost(ev.total_cost_usd)),
       stat("耗时", formatDuration(ev.duration_ms)),
@@ -620,12 +687,34 @@ function handleResult(ev) {
     ),
   );
   $("#stats-slot").append(card);
-  setRunStatus(failed ? "failed" : "finished", failed ? "失败" : "完成");
+  resultCard = card;
 }
 
-/** Stream is over: mark tool calls that never got a result, and catch runs with no `result`. */
-function finishRun(errorMessage) {
+/** A red box explaining why the run failed, with stderr if there is any. */
+function errorCard(title, message, stderr) {
+  return el("div", { class: "card error-box" },
+    el("h3", { text: title }),
+    message ? el("p", { text: message }) : null,
+    stderr ? el("details", { open: "" }, el("summary", { text: "stderr" }), el("pre", { text: stderr })) : null,
+  );
+}
+
+/**
+ * The stream is over, one way or another. Decide the run's final status (SPEC §5):
+ *   - the run could not start (run_error)                  -> failed
+ *   - no `result` event (crash, non-zero exit, lost link)  -> failed
+ *   - `result` with is_error or subtype != success         -> failed
+ *   - otherwise                                            -> finished
+ * Every path ends here, so the page never keeps spinning.
+ *
+ * info: { runError?: string, exitCode?: number|null, stderr?: string, lostConnection?: bool }
+ */
+function finishRun(info = {}) {
   if (source) { source.close(); source = null; }
+  if (runEnded) return;  // e.g. `end` already handled, then the socket closed
+  runEnded = true;
+  stopTimer();
+
   for (const entry of toolCards.values()) {
     if (entry.card.classList.contains("pending")) {
       entry.card.classList.remove("pending");
@@ -634,39 +723,115 @@ function finishRun(errorMessage) {
       setOutlineStatus(entry, "error");
     }
   }
-  if (!gotResult) {
-    const msg = errorMessage || "事件流已结束，但没有收到 result 事件。";
-    $("#stats-slot").append(el("div", { class: "card error-box", text: msg }));
-    setRunStatus("failed", "失败");
+
+  const stderr = (info.stderr || "").trim();
+  const exit = info.exitCode;
+  const slot = $("#stats-slot");
+  let failed = true;
+
+  if (info.runError) {
+    slot.append(errorCard("运行没有启动", info.runError));
+  } else if (info.lostConnection && !gotResult) {
+    slot.append(errorCard("运行中断", "与服务器的连接断开了。请确认服务器仍在运行，然后再试一次。"));
+  } else if (!gotResult) {
+    const why = exit != null && exit !== 0
+      ? `claude 进程以退出码 ${exit} 结束，没有返回 result 事件。`
+      : "事件流已结束，但没有收到 result 事件。";
+    slot.append(errorCard("运行失败", why, stderr));
+  } else if (resultFailed) {
+    if (stderr && resultCard) {
+      resultCard.append(el("details", {}, el("summary", { text: "stderr" }), el("pre", { text: stderr })));
+    }
+  } else {
+    failed = false;
   }
+  setRunStatus(failed ? "failed" : "finished", failed ? "失败" : "完成");
+  followBottom();  // bring the final numbers or the error into view
 }
+
+/* ---------- elapsed-time display on the status badge ---------- */
+
+let timer = null;
+function startTimer() {
+  const t0 = Date.now();
+  const tick = () => setRunStatus("running", `进行中 · ${Math.floor((Date.now() - t0) / 1000)} 秒`);
+  tick();
+  timer = setInterval(tick, 1000);
+}
+function stopTimer() { clearInterval(timer); timer = null; }
 
 /* =====================================================================
  * Starting a run
  * ===================================================================== */
 
-function startReplay() {
-  const file = $("#sample").value;
-  if (!file) return;
+function currentMode() {
+  return document.querySelector("input[name=mode]:checked").value;
+}
+
+function showMode() {
+  const mode = currentMode();
+  $("#composer").className = "card mode-" + mode;
+  $("#form-error").textContent = "";
+  store("mode", mode);
+}
+
+/** Open the SSE stream for a run and route its events. Used by both modes. */
+function startStream(url) {
   if (source) source.close();
   resetView();
-  setRunStatus("running", "进行中");
+  startTimer();
+  following = true;
 
   // EventSource = the browser's built-in SSE client.
-  source = new EventSource(`/api/replay?file=${encodeURIComponent(file)}`);
+  source = new EventSource(url);
 
   source.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
     try { handleEvent(ev); }
     catch (err) { console.error("render error", err, ev); quiet(ev, `渲染出错：${err.message}`); }
+    followBottom();
   };
-  source.addEventListener("end", () => finishRun());
-  source.onerror = () => {
-    // Fires if the server is unreachable, the file is missing, or the stream drops mid-run.
-    finishRun("与服务器的连接中断（或回放文件不存在）。");
-  };
+  source.addEventListener("run_error", (msg) => {
+    finishRun({ runError: JSON.parse(msg.data).message });
+  });
+  source.addEventListener("end", (msg) => {
+    const d = JSON.parse(msg.data);
+    finishRun({ exitCode: d.exit_code, stderr: d.stderr });
+  });
+  // Fires if the server can't be reached, answers with an error, or the stream drops.
+  // finishRun closes the EventSource, which also stops the browser from reconnecting
+  // (a reconnect would start a second claude process).
+  source.onerror = () => finishRun({ lostConnection: true });
 }
+
+function startRun(e) {
+  e.preventDefault();
+  if (source) return;  // a run is already going
+  const err = $("#form-error");
+  err.textContent = "";
+
+  if (currentMode() === "replay") {
+    const file = $("#sample").value;
+    if (!file) { err.textContent = "请选择一个样例文件。"; return; }
+    startStream(`/api/replay?file=${encodeURIComponent(file)}`);
+    return;
+  }
+
+  const prompt = $("#prompt").value.trim();
+  const cwd = $("#cwd").value.trim();
+  if (!prompt) { err.textContent = "请输入提示词。"; $("#prompt").focus(); return; }
+  if (!cwd) { err.textContent = "请填写工作目录。"; $("#cwd").focus(); return; }
+  store("cwd", cwd);
+
+  const params = new URLSearchParams({ prompt, cwd });
+  startStream(`/api/run?${params}`);
+  $("#run-prompt").append(el("div", { class: "user-prompt" }, el("span", { class: "who", text: `你 · ${cwd}` }), prompt));
+}
+
+/* localStorage only remembers conveniences (last mode and directory); it may be unavailable. */
+function store(key, value) { try { localStorage.setItem("ccweb." + key, value); } catch {} }
+function recall(key) { try { return localStorage.getItem("ccweb." + key); } catch { return null; } }
 
 async function loadSamples() {
   const select = $("#sample");
@@ -680,7 +845,14 @@ async function loadSamples() {
   }
 }
 
-$("#run-btn").onclick = startReplay;
+$("#composer").addEventListener("submit", startRun);
+$("#prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#composer").requestSubmit();
+});
+for (const r of document.querySelectorAll("input[name=mode]")) r.onchange = showMode;
+if (recall("mode") === "replay") document.querySelector("input[name=mode][value=replay]").checked = true;
+$("#cwd").value = recall("cwd") || "";
+showMode();
 $("#show-quiet").onchange = (e) => document.body.classList.toggle("show-quiet", e.target.checked);
 $("#outline-btn").onclick = () => document.body.classList.toggle("outline-open");
 
