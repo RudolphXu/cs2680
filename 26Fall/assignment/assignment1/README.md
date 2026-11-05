@@ -31,6 +31,10 @@ Open http://127.0.0.1:8000 . Stop the server with Ctrl+C.
   `--resume <session_id>` and is added below the earlier runs, marked as resumed. The working directory is locked during a
   conversation, because Claude Code stores sessions per directory. Click **开始新会话** to clear the page and start over.
 - **Replay**: pick a file from `samples/` to replay it at about one event every 0.3 s. Free and instant; use it for UI work.
+- **Outline (left)**: a flowchart of the tool calls, one coloured node per call (colour = kind of tool). Agent/Task calls sent
+  in the same assistant message fork into side-by-side columns, one per subagent, and join back when all of them are done
+  (dashed lines = still running). Folding a subagent in the dialogue folds its column too. Click a node to jump to that call.
+  On a narrow window the outline becomes a drawer opened by the **目录** button.
 
 ## Files
 

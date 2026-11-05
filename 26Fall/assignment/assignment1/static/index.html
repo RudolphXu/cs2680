@@ -86,40 +86,107 @@
   /* ---------- main column ---------- */
   /* ---------- page layout: outline (left) + dialogue (right) ---------- */
   .layout {
-    display: grid; grid-template-columns: 240px minmax(0, 1fr);
+    display: grid; grid-template-columns: 260px minmax(0, 1fr);
     gap: 20px; max-width: 1240px; margin: 0 auto; padding: 16px;
   }
   main { min-width: 0; max-width: 920px; }
 
-  /* outline = table of contents of tool calls */
+  /* ---------- outline = flowchart of tool calls ---------- */
   #outline {
     position: sticky; top: calc(var(--header-h, 56px) + 16px);
     align-self: start;
-    max-height: calc(100vh - var(--header-h, 56px) - 32px); overflow-y: auto;
+    max-height: calc(100vh - var(--header-h, 56px) - 32px); overflow: auto;
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 8px; font-size: 13px;
+    padding: 10px 8px 14px; font-size: 13px;
   }
-  #outline h2 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 6px 6px; }
-  #outline ol { list-style: none; margin: 0; padding: 0; }
-  #outline ol ol { margin-left: 10px; padding-left: 8px; border-left: 2px solid var(--sub); }
+  #outline h2 { font-size: 12px; color: var(--muted); font-weight: 500; font-style: italic; margin: 0 6px 10px; }
   #outline .empty-outline { color: var(--muted); padding: 4px 6px; }
-  .ol-run {
-    display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
-    font: inherit; font-size: 11px; color: var(--muted); padding: 6px 6px 2px; text-transform: none;
+
+  /* tool colours: each family gets a fill (--nbg) and a text colour (--nfg) */
+  :root {
+    --line: #bcbcb6; --line-sub: #8fa6e0; --col-bg: rgba(36, 87, 214, .05);
+    --you-bg: #ececea;    --you-fg: #333331;
+    --read-bg: #e3f1e8;   --read-fg: #2c6e49;
+    --edit-bg: #fbeedd;   --edit-fg: #9a4f12;
+    --bash-bg: #f5e4e4;   --bash-fg: #7a2a2a;
+    --agent-bg: #e6eefd;  --agent-fg: #2457d6;
+    --web-bg: #dff2f3;    --web-fg: #1b6a73;
+    --todo-bg: #eee8fb;   --todo-fg: #5a43b8;
+    --other-bg: #efeee8;  --other-fg: #5d5a50;
   }
-  .ol-run:hover { color: var(--text); }
-  #outline-list > li > ol { margin-left: 0; padding-left: 0; border-left: 0; }
-  .ol-item {
-    display: flex; align-items: center; gap: 6px; width: 100%;
-    padding: 3px 6px; border: 0; border-radius: 5px; background: none;
-    color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --line: #55554f; --line-sub: #4f639a; --col-bg: rgba(148, 179, 255, .06);
+      --you-bg: #353533;    --you-fg: #e2e2df;
+      --read-bg: #1d3226;   --read-fg: #85d3a6;
+      --edit-bg: #3a2b1b;   --edit-fg: #f0b27a;
+      --bash-bg: #3a2323;   --bash-fg: #f0a5a5;
+      --agent-bg: #1d2944;  --agent-fg: #94b3ff;
+      --web-bg: #183335;    --web-fg: #7fd4db;
+      --todo-bg: #2a2440;   --todo-fg: #baa9f6;
+      --other-bg: #2f2f2c;  --other-fg: #c9c6ba;
+    }
   }
-  .ol-item:hover { background: var(--code-bg); }
-  .ol-item .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-  .ol-item.pending .dot { background: var(--pending); animation: pulse 1s infinite; }
-  .ol-item.ok .dot { background: var(--ok); }
-  .ol-item.error .dot { background: var(--err); }
-  .ol-item .ol-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .f-you   { --nbg: var(--you-bg);   --nfg: var(--you-fg); }
+  .f-read  { --nbg: var(--read-bg);  --nfg: var(--read-fg); }
+  .f-edit  { --nbg: var(--edit-bg);  --nfg: var(--edit-fg); }
+  .f-bash  { --nbg: var(--bash-bg);  --nfg: var(--bash-fg); }
+  .f-agent { --nbg: var(--agent-bg); --nfg: var(--agent-fg); }
+  .f-web   { --nbg: var(--web-bg);   --nfg: var(--web-fg); }
+  .f-todo  { --nbg: var(--todo-bg);  --nfg: var(--todo-fg); }
+  .f-other { --nbg: var(--other-bg); --nfg: var(--other-fg); }
+
+  /* a node = one tool call (or a "You" node where a run starts) */
+  .fnode {
+    max-width: 100%; min-width: min(92px, 100%);
+    padding: 2px 12px; border: 1.5px solid transparent; border-radius: 9px;
+    background: var(--nbg); color: var(--nfg); cursor: pointer;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fnode:hover { filter: brightness(.96); }
+  .fnode.pending { border-color: var(--nfg); animation: node-pulse 1.2s infinite; }
+  .fnode.error { border-color: var(--err); }
+  .fnode.error::after { content: " ✕"; color: var(--err); }
+  .fnode.current { box-shadow: 0 0 0 2.5px var(--accent); }
+  @keyframes node-pulse { 50% { border-color: transparent; } }
+
+  /* a lane = nodes stacked top to bottom, joined by a vertical line */
+  .lane { display: flex; flex-direction: column; align-items: center; }
+  .item { display: flex; flex-direction: column; align-items: center; max-width: 100%; }
+  .item::before { content: ""; height: 10px; border-left: 1.5px solid var(--line); }
+  #flow > .item:first-child::before { display: none; }
+
+  /* a fork = parallel subagents: one column each, side by side */
+  .item.fork { align-self: stretch; }
+  .cols { display: flex; width: 100%; }
+  .col { position: relative; flex: 1 1 0; min-width: 0; padding: 0 3px; display: flex; flex-direction: column; }
+  /* horizontal bars at the top (split) and bottom (join), from first to last column centre */
+  .col::before, .col::after { content: ""; position: absolute; left: 0; right: 0; }
+  .col::before { top: 0; border-top: 1.5px solid var(--line); }
+  .col::after { bottom: 0; border-bottom: 1.5px solid var(--line); }
+  .col:first-child::before, .col:first-child::after { left: 50%; }
+  .col:last-child::before, .col:last-child::after { right: 50%; }
+  .col .lane .item::before { border-color: var(--line-sub); }
+  /* a light panel behind each subagent's column, so it's clear where the subagent ends */
+  .col > .lane { background: var(--col-bg); border-radius: 10px; padding: 0 4px 6px; }
+  .col .fnode { padding: 2px 6px; min-width: min(72px, 100%); }
+  .col .col > .lane { padding: 0 2px 4px; }
+  /* each column's line runs down to the join bar, so short columns still meet it */
+  .tail { flex: 1; min-height: 10px; align-self: center; border-left: 1.5px solid var(--line-sub); }
+  /* still running: dashed until that subagent / all subagents are done */
+  .col:not(.ended) > .tail { border-left-style: dashed; }
+  .fork:not(.joined) > .cols > .col::after { border-bottom-style: dashed; }
+
+  /* subagent folded in the dialogue: only a line and "N 个事件已折叠" */
+  .folded {
+    display: none; align-self: center; border: 0; background: none; cursor: pointer;
+    font: inherit; font-size: 11px; color: var(--muted); padding: 0; text-align: center;
+  }
+  .folded::before { content: ""; display: block; width: 0; height: 10px; margin: 0 auto 2px; border-left: 1.5px solid var(--line-sub); }
+  .folded:hover { color: var(--text); }
+  .col.collapsed > .folded { display: block; }
+  .col.collapsed > .lane > .item:not(:first-child) { display: none; }
 
   #outline-btn { display: none; }
 
@@ -129,7 +196,7 @@
     #outline-btn { display: inline-block; }
     #outline {
       position: fixed; z-index: 20; top: var(--header-h, 56px); left: 0; bottom: 0;
-      width: min(280px, 85vw); max-height: none; border-radius: 0;
+      width: min(300px, 85vw); max-height: none; border-radius: 0;
       align-self: stretch; /* fill top-to-bottom; "start" would shrink it to its content */
       box-shadow: 4px 0 16px rgba(0,0,0,.15);
       transform: translateX(-105%); transition: transform .2s;
@@ -143,7 +210,7 @@
 
   /* briefly highlight the card the outline jumped to */
   .tool { scroll-margin-top: calc(var(--header-h, 56px) + 16px); }
-  .tool.flash { box-shadow: 0 0 0 3px var(--accent); transition: box-shadow .3s; }
+  .tool.flash, .user-prompt.flash { box-shadow: 0 0 0 3px var(--accent); transition: box-shadow .3s; }
   .card {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
@@ -278,9 +345,9 @@
 
 <div class="layout">
 <nav id="outline" aria-label="工具调用目录">
-  <h2>工具调用</h2>
-  <ol id="outline-list"></ol>
-  <div class="empty-outline" id="outline-empty">还没有工具调用</div>
+  <h2>outline</h2>
+  <div class="lane" id="flow"></div>
+  <div class="empty-outline" id="outline-empty">还没有运行</div>
 </nav>
 
 <main>
@@ -447,7 +514,9 @@ let source = null;          // the EventSource of the current run
  *   card, status, result   the card's DOM nodes
  *   subSlot                where this call's subagent section goes (Agent/Task only)
  *   sub                    { details, summary, body, calls } once a subagent event arrives
- *   olItem, olChildren     its line in the outline, and the nested list for its subagent's calls
+ *   olItem, lane           its node in the outline flowchart, and the lane it sits in
+ *   col                    Agent/Task only: its column in a fork { el, lane, fork, ended }
+ *   background             true for a subagent started in the background (ends with task_notification)
  */
 let toolCards = new Map();
 
@@ -455,7 +524,6 @@ let toolCards = new Map();
  * The page shows a conversation: one or more runs, each a <section> of its own.
  * `run` is the newest one, the one events are written into:
  *   section, sessionBox, log, stats   its DOM parts
- *   olList                            its tool calls in the outline
  *   cwd, resumeId                     how it was started (resumeId = session it continues)
  *   sessionId                         the session id this run reported
  *   gotResult, resultFailed, resultCard, ended
@@ -486,7 +554,8 @@ function clearConversation() {
   runCount = 0;
   conversation = null;
   $("#runs").innerHTML = "";
-  $("#outline-list").innerHTML = "";
+  $("#flow").innerHTML = "";
+  $("#flow").openFork = null;
   $("#outline-empty").style.display = "";
   updateComposer();
 }
@@ -506,16 +575,18 @@ function beginRun({ prompt, cwd, resumeId }) {
     sessionBox, log, stats);
   $("#runs").append(section);
 
-  // In the outline, each run is a group with its tool calls below it.
-  const olList = el("ol");
-  const label = el("button", { class: "ol-run", text: `运行 #${runCount}${resumeId ? " · 续接" : ""}` });
-  label.onclick = () => {
+  // In the outline, each run starts with a "You" node (a replay with a "回放" node).
+  const headNode = flowNode(prompt ? "You" : "回放", "you",
+    prompt ? `运行 #${runCount}${resumeId ? "（续接）" : ""}：${prompt}` : "回放");
+  headNode.onclick = () => {
     document.body.classList.remove("outline-open");
     section.scrollIntoView({ behavior: "smooth", block: "start" });
+    flash(headNode, section.querySelector(".user-prompt"));
   };
-  $("#outline-list").append(el("li", {}, label, olList));
+  addFlowItem($("#flow"), headNode);
+  $("#outline-empty").style.display = "none";
 
-  run = { section, sessionBox, log, stats, olList, cwd, resumeId, sessionId: null,
+  run = { section, sessionBox, log, stats, cwd, resumeId, sessionId: null,
           gotResult: false, resultFailed: false, resultCard: null, ended: false };
 }
 
@@ -530,6 +601,11 @@ function ensureSubagent(entry) {
     entry.subSlot.append(details);
     entry.sub = { details, summary, body, calls: 0 };
     updateSubSummary(entry);
+    // Folding the subagent in the dialogue folds its column in the outline too.
+    details.addEventListener("toggle", () => {
+      entry.col?.el.classList.toggle("collapsed", !details.open);
+      refreshFoldLabels();
+    });
   }
   return entry.sub;
 }
@@ -568,27 +644,109 @@ function followBottom() {
   if (following) window.scrollTo(0, document.documentElement.scrollHeight);
 }
 
-/* ---------- the outline ---------- */
+/* ---------- the outline: a flowchart of tool calls ---------- */
+/*
+ * The flowchart is built from "lanes": a lane is a column of nodes joined by
+ * a vertical line. #flow is the main agent's lane. When the main agent starts
+ * subagents (Agent/Task calls), they get a "fork": one column per subagent,
+ * side by side, and each column holds a lane of its own for that subagent's
+ * calls (so a subagent of a subagent forks again inside its column).
+ * Below the fork the columns join back into the lane, and the lane's next
+ * node hangs under the join.
+ */
+
+/** Which colour family a tool belongs to. */
+function toolFamily(name) {
+  if (["Read", "Glob", "Grep", "LS", "NotebookRead"].includes(name)) return "read";
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(name)) return "edit";
+  if (["Bash", "BashOutput", "KillShell", "KillBash", "Monitor"].includes(name)) return "bash";
+  if (isAgentTool(name)) return "agent";
+  if (["WebSearch", "WebFetch"].includes(name)) return "web";
+  if (["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"].includes(name)) return "todo";
+  return "other";
+}
+
+function isAgentTool(name) { return name === "Agent" || name === "Task"; }
+
+function flowNode(label, family, title) {
+  return el("button", { class: `fnode f-${family}`, type: "button", title, text: label });
+}
+
+/** Add one item (a node or a fork) at the bottom of a lane. Ends any open fork there. */
+function addFlowItem(lane, content) {
+  lane.openFork = null;
+  const item = el("div", { class: "item" }, content);
+  lane.append(item);
+  return item;
+}
+
+/** The lane an event's tool calls go into: the main lane, or its subagent's column. */
+function laneFor(ev) {
+  const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
+  if (!parent) return $("#flow");
+  return parent.col ? parent.col.lane : parent.lane;
+}
+
+/** Keep the outline scrolled to the newest node, unless the user scrolled up in it. */
+function withOutlineFollow(fn) {
+  const o = $("#outline");
+  const atBottom = o.scrollTop + o.clientHeight >= o.scrollHeight - 40;
+  fn();
+  if (atBottom) o.scrollTop = o.scrollHeight;
+}
 
 function addOutlineItem(ev, entry, id) {
-  const btn = el("button", { class: "ol-item pending", title: entry.key || entry.name },
-    el("span", { class: "dot" }), el("span", { class: "ol-name", text: entry.name }));
-  btn.onclick = () => jumpTo(id);
-  const li = el("li", {}, btn);
-  entry.olItem = btn;
+  const node = flowNode(entry.name, toolFamily(entry.name), entry.key ? `${entry.name}: ${entry.key}` : entry.name);
+  node.classList.add("pending");
+  node.onclick = () => jumpTo(id);
+  entry.olItem = node;
+  const lane = laneFor(ev);
+  entry.lane = lane;
 
-  // A subagent's calls are listed under the Agent/Task call that spawned them.
-  const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
-  let list = run.olList;
-  if (parent) {
-    if (!parent.olChildren) {
-      parent.olChildren = el("ol");
-      parent.olItem.parentElement.append(parent.olChildren);
+  withOutlineFollow(() => {
+    if (!isAgentTool(entry.name)) {
+      addFlowItem(lane, node);
+    } else {
+      // Agent/Task calls sent in the same assistant message run in parallel:
+      // they share one fork. (stream-json sends each block of a message as its
+      // own event, but they all carry the same message.id.)
+      const msgId = ev.message?.id;
+      let fork = lane.openFork;
+      if (!fork || !msgId || fork.msgId !== msgId) {
+        const cols = el("div", { class: "cols" });
+        const item = addFlowItem(lane, cols);
+        item.classList.add("fork");
+        fork = { msgId, item, cols, members: [] };
+        lane.openFork = fork;
+      }
+      const colLane = el("div", { class: "lane" });
+      const folded = el("button", { class: "folded", type: "button" });
+      folded.onclick = () => { if (entry.sub) entry.sub.details.open = true; jumpTo(id); };
+      const col = el("div", { class: "col" }, colLane, folded, el("div", { class: "tail" }));
+      colLane.append(el("div", { class: "item" }, node));
+      fork.cols.append(col);
+      fork.members.push(entry);
+      entry.col = { el: col, lane: colLane, fork, ended: false };
     }
-    list = parent.olChildren;
+    refreshFoldLabels();
+  });
+}
+
+/** A subagent is done: its column's line turns solid; when all are done, so does the join. */
+function endColumn(entry) {
+  const c = entry.col;
+  if (!c || c.ended) return;
+  c.ended = true;
+  c.el.classList.add("ended");
+  if (c.fork.members.every((m) => m.col.ended)) c.fork.item.classList.add("joined");
+}
+
+/** Folded columns show "N 个事件已折叠", N = the tool calls hidden in that column. */
+function refreshFoldLabels() {
+  for (const col of document.querySelectorAll("#flow .col.collapsed")) {
+    const n = col.querySelector(":scope > .lane").querySelectorAll(".fnode").length - 1;
+    col.querySelector(":scope > .folded").textContent = n > 0 ? `${n} 个事件已折叠` : "已折叠";
   }
-  list.append(li);
-  $("#outline-empty").style.display = "none";
 }
 
 function setOutlineStatus(entry, kind) {
@@ -597,17 +755,27 @@ function setOutlineStatus(entry, kind) {
   entry.olItem.classList.add(kind);
 }
 
+/** Briefly highlight an outline node and the dialogue element it points to. */
+function flash(node, target) {
+  for (const x of [node, target]) {
+    if (!x) continue;
+    const cls = x === node ? "current" : "flash";
+    x.classList.add(cls);
+    setTimeout(() => x.classList.remove(cls), 1200);
+  }
+}
+
 /** Scroll to a tool card, opening any collapsed subagent sections around it first. */
 function jumpTo(id) {
-  const { card } = toolCards.get(id) ?? {};
-  if (!card) return;
+  const entry = toolCards.get(id);
+  if (!entry) return;
+  const { card } = entry;
   for (let d = card.parentElement.closest("details"); d; d = d.parentElement.closest("details")) {
     d.open = true;
   }
   document.body.classList.remove("outline-open"); // close the drawer on narrow windows
   card.scrollIntoView({ behavior: "smooth", block: "start" });
-  card.classList.add("flash");
-  setTimeout(() => card.classList.remove("flash"), 1200);
+  flash(entry.olItem, card);
 }
 
 function quiet(ev, text) {
@@ -653,6 +821,11 @@ function handleSystem(ev) {
     return;
   }
   if (ev.subtype === "thinking_tokens") return; // pure noise
+  // Background subagents: the Agent call returns at once ("Async agent launched"),
+  // and the subagent's real end comes later as a task_notification.
+  const task = ev.tool_use_id && toolCards.get(ev.tool_use_id);
+  if (task && ev.subtype === "task_started" && ev.is_backgrounded) task.background = true;
+  if (task && ev.subtype === "task_notification") finishBackground(task, ev.status);
   const extra = ev.description || ev.status || "";
   quiet(ev, `[system · ${ev.subtype}] ${extra}`);
 }
@@ -732,12 +905,31 @@ function attachResult(ev, block) {
       el("summary", { text: `工具结果（未找到对应调用 ${block.tool_use_id}）` }), el("pre", { text })));
     return;
   }
-  entry.card.classList.remove("pending");
-  entry.card.classList.add(isError ? "error" : "ok");
-  entry.status.textContent = isError ? "错误" : "成功";
-  setOutlineStatus(entry, isError ? "error" : "ok");
   entry.result.innerHTML = "";
   entry.result.append(foldedPre(text));
+
+  if (entry.col && !isError && (entry.background || text.startsWith("Async agent launched"))) {
+    // Only the launch receipt of a background subagent: it is still running.
+    entry.background = true;
+    entry.status.textContent = "后台运行中…";
+    return;
+  }
+  setToolStatus(entry, isError ? "error" : "ok", isError ? "错误" : "成功");
+  endColumn(entry);
+}
+
+/** A background subagent reported its end (task_notification). */
+function finishBackground(entry, status) {
+  const ok = status === "completed";
+  setToolStatus(entry, ok ? "ok" : "error", ok ? "成功" : `失败（${status}）`);
+  endColumn(entry);
+}
+
+function setToolStatus(entry, kind, label) {
+  entry.card.classList.remove("pending", "ok", "error");
+  entry.card.classList.add(kind);
+  entry.status.textContent = label;
+  setOutlineStatus(entry, kind);
 }
 
 function handleResult(ev) {
@@ -794,12 +986,8 @@ function finishRun(info = {}) {
   const { gotResult, resultFailed, resultCard } = run;
 
   for (const entry of toolCards.values()) {
-    if (entry.card.classList.contains("pending")) {
-      entry.card.classList.remove("pending");
-      entry.card.classList.add("error");
-      entry.status.textContent = "无结果";
-      setOutlineStatus(entry, "error");
-    }
+    if (entry.card.classList.contains("pending")) setToolStatus(entry, "error", "无结果");
+    endColumn(entry);  // the run is over, so every subagent is too
   }
 
   const stderr = (info.stderr || "").trim();
