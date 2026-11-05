@@ -103,6 +103,12 @@
   #outline ol { list-style: none; margin: 0; padding: 0; }
   #outline ol ol { margin-left: 10px; padding-left: 8px; border-left: 2px solid var(--sub); }
   #outline .empty-outline { color: var(--muted); padding: 4px 6px; }
+  .ol-run {
+    display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
+    font: inherit; font-size: 11px; color: var(--muted); padding: 6px 6px 2px; text-transform: none;
+  }
+  .ol-run:hover { color: var(--text); }
+  #outline-list > li > ol { margin-left: 0; padding-left: 0; border-left: 0; }
   .ol-item {
     display: flex; align-items: center; gap: 6px; width: 100%;
     padding: 3px 6px; border: 0; border-radius: 5px; background: none;
@@ -142,10 +148,28 @@
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
   }
-  #session { display: none; font-size: 13px; color: var(--muted); }
-  #session .row { display: flex; gap: 8px; flex-wrap: wrap; }
-  #session b { color: var(--text); font-weight: 500; }
-  #empty { color: var(--muted); text-align: center; padding: 48px 0; }
+  .session-box { display: none; font-size: 13px; color: var(--muted); }
+  .session-box .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .session-box b { color: var(--text); font-weight: 500; }
+  .session-box .resumed { color: var(--sub); margin-top: 4px; }
+
+  /* one section per run; follow-ups are added below */
+  .run { scroll-margin-top: calc(var(--header-h, 56px) + 16px); }
+  .run + .run { border-top: 1px dashed var(--border); margin-top: 20px; padding-top: 8px; }
+  .run-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .resume-chip {
+    color: var(--sub); border: 1px solid var(--sub); border-radius: 999px; padding: 0 8px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere;
+  }
+  #runs:empty + #composer { margin-top: 0; }
+
+  /* composer in follow-up mode */
+  .follow-banner { display: none; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+                   font-size: 13px; color: var(--sub); }
+  .follow-banner b { font-weight: 500; overflow-wrap: anywhere; }
+  #composer.follow-up .follow-banner { display: flex; }
+  #composer.follow-up { border-color: var(--sub); }
+  #composer input[readonly] { opacity: .6; cursor: not-allowed; }
   .error-box { color: var(--err); background: var(--err-bg); border-color: transparent; }
   .error-box h3 { margin: 0 0 6px; font-size: 15px; }
   .error-box p { margin: 0 0 6px; overflow-wrap: anywhere; }
@@ -260,11 +284,20 @@
 </nav>
 
 <main>
+
+  <!-- The conversation: one <section class="run"> per run -->
+  <div id="runs"></div>
+
   <!-- Where a run is set up and started -->
   <form class="card" id="composer" autocomplete="off">
     <div class="mode-switch" role="radiogroup" aria-label="模式">
       <label><input type="radio" name="mode" value="live" checked> 实时</label>
       <label><input type="radio" name="mode" value="replay"> 回放</label>
+    </div>
+
+    <div class="follow-banner">
+      <span>↩ 继续会话 <b class="mono" id="resume-id"></b></span>
+      <button class="ghost" id="new-session" type="button">开始新会话</button>
     </div>
 
     <div class="live-only">
@@ -284,11 +317,6 @@
       <button class="primary" id="run-btn" type="submit">Run</button>
     </div>
   </form>
-
-  <div id="run-prompt"></div>
-  <div class="card" id="session"></div>
-  <div id="log"><div id="empty">填写提示词和工作目录，点击 Run。</div></div>
-  <div id="stats-slot"></div>
 </main>
 </div>
 
@@ -422,10 +450,24 @@ let source = null;          // the EventSource of the current run
  *   olItem, olChildren     its line in the outline, and the nested list for its subagent's calls
  */
 let toolCards = new Map();
-let gotResult = false;      // did we see the final `result` event?
-let resultFailed = false;   // ...and did it report a failure?
-let resultCard = null;      // the card showing the result's numbers
-let runEnded = false;       // finishRun already ran for this run
+
+/*
+ * The page shows a conversation: one or more runs, each a <section> of its own.
+ * `run` is the newest one, the one events are written into:
+ *   section, sessionBox, log, stats   its DOM parts
+ *   olList                            its tool calls in the outline
+ *   cwd, resumeId                     how it was started (resumeId = session it continues)
+ *   sessionId                         the session id this run reported
+ *   gotResult, resultFailed, resultCard, ended
+ */
+let run = null;
+let runCount = 0;
+
+/*
+ * `conversation` is the session the next live run continues (SPEC §6.5),
+ * or null when the next run starts a new session.
+ */
+let conversation = null;
 
 /** Run-level status (SPEC §6.4): running / finished / failed. Locks the form while running. */
 function setRunStatus(kind, label) {
@@ -434,22 +476,47 @@ function setRunStatus(kind, label) {
   b.textContent = label;
   const running = kind === "running";
   for (const c of $("#composer").querySelectorAll("button, input, textarea, select")) c.disabled = running;
-  $("#run-btn").textContent = running ? "运行中…" : "Run";
+  $("#run-btn").textContent = running ? "运行中…" : (conversation && currentMode() === "live" ? "继续" : "Run");
 }
 
-function resetView() {
+/** Empty the page: no runs, no outline, no session to continue. */
+function clearConversation() {
   toolCards = new Map();
-  gotResult = false;
-  resultFailed = false;
-  resultCard = null;
-  runEnded = false;
-  $("#log").innerHTML = "";
-  $("#run-prompt").innerHTML = "";
-  $("#stats-slot").innerHTML = "";
-  $("#session").style.display = "none";
-  $("#session").innerHTML = "";
+  run = null;
+  runCount = 0;
+  conversation = null;
+  $("#runs").innerHTML = "";
   $("#outline-list").innerHTML = "";
   $("#outline-empty").style.display = "";
+  updateComposer();
+}
+
+/** Add a new run section at the end of the page and make it the current run. */
+function beginRun({ prompt, cwd, resumeId }) {
+  runCount++;
+  const sessionBox = el("div", { class: "card session-box" });
+  const log = el("div", { class: "log" });
+  const stats = el("div");
+  const head = el("div", { class: "run-head" },
+    el("span", { text: `运行 #${runCount}` }),
+    resumeId ? el("span", { class: "resume-chip", text: `↩ 续接会话 ${resumeId}` }) : null);
+  const section = el("section", { class: "run", id: `run-${runCount}` },
+    head,
+    prompt ? el("div", { class: "user-prompt" }, el("span", { class: "who", text: `你 · ${cwd}` }), prompt) : null,
+    sessionBox, log, stats);
+  $("#runs").append(section);
+
+  // In the outline, each run is a group with its tool calls below it.
+  const olList = el("ol");
+  const label = el("button", { class: "ol-run", text: `运行 #${runCount}${resumeId ? " · 续接" : ""}` });
+  label.onclick = () => {
+    document.body.classList.remove("outline-open");
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  $("#outline-list").append(el("li", {}, label, olList));
+
+  run = { section, sessionBox, log, stats, olList, cwd, resumeId, sessionId: null,
+          gotResult: false, resultFailed: false, resultCard: null, ended: false };
 }
 
 /* ---------- the tree ---------- */
@@ -480,7 +547,7 @@ function updateSubSummary(entry) {
  */
 function containerFor(ev) {
   const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
-  return parent ? ensureSubagent(parent).body : $("#log");
+  return parent ? ensureSubagent(parent).body : run.log;
 }
 
 /** Append a node where it belongs. */
@@ -512,7 +579,7 @@ function addOutlineItem(ev, entry, id) {
 
   // A subagent's calls are listed under the Agent/Task call that spawned them.
   const parent = ev.parent_tool_use_id && toolCards.get(ev.parent_tool_use_id);
-  let list = $("#outline-list");
+  let list = run.olList;
   if (parent) {
     if (!parent.olChildren) {
       parent.olChildren = el("ol");
@@ -567,12 +634,21 @@ function handleEvent(ev) {
 
 function handleSystem(ev) {
   if (ev.subtype === "init") {
-    const s = $("#session");
+    if (ev.session_id) run.sessionId = ev.session_id;
+    const s = run.sessionBox;
     s.innerHTML = "";
+    // A follow-up run says so (SPEC §6.5), and notes it if Claude Code reports a different id.
+    let resumed = null;
+    if (run.resumeId) {
+      resumed = ev.session_id && ev.session_id !== run.resumeId
+        ? el("div", { class: "row resumed" }, `↩ 已续接会话 ${run.resumeId}，之前的对话已接上。Claude Code 给这次运行分配了新的会话 ID（见上），下一次追问会用新 ID。`)
+        : el("div", { class: "row resumed" }, "↩ 已续接同一会话，Claude 记得之前的对话");
+    }
     s.append(
       el("div", { class: "row" }, "会话 ", el("b", { class: "mono", text: ev.session_id || "—" })),
       el("div", { class: "row" }, "模型 ", el("b", { text: ev.model || "—" }), "　目录 ", el("b", { class: "mono", text: ev.cwd || "—" })),
     );
+    if (resumed) s.append(resumed);  // DOM append(null) would print "null"
     s.style.display = "block";
     return;
   }
@@ -665,10 +741,11 @@ function attachResult(ev, block) {
 }
 
 function handleResult(ev) {
-  gotResult = true;
+  run.gotResult = true;
+  if (ev.session_id) run.sessionId = ev.session_id;
   // SPEC §5: a run failed if is_error is true or subtype is anything but "success".
   const failed = ev.is_error === true || ev.subtype !== "success";
-  resultFailed = failed;
+  run.resultFailed = failed;
 
   const stat = (label, value, wide = false) =>
     el("div", { class: "stat" + (wide ? " wide" : "") },
@@ -686,8 +763,8 @@ function handleResult(ev) {
       stat("会话 ID", ev.session_id || "—", true),
     ),
   );
-  $("#stats-slot").append(card);
-  resultCard = card;
+  run.stats.append(card);
+  run.resultCard = card;
 }
 
 /** A red box explaining why the run failed, with stderr if there is any. */
@@ -711,9 +788,10 @@ function errorCard(title, message, stderr) {
  */
 function finishRun(info = {}) {
   if (source) { source.close(); source = null; }
-  if (runEnded) return;  // e.g. `end` already handled, then the socket closed
-  runEnded = true;
+  if (run.ended) return;  // e.g. `end` already handled, then the socket closed
+  run.ended = true;
   stopTimer();
+  const { gotResult, resultFailed, resultCard } = run;
 
   for (const entry of toolCards.values()) {
     if (entry.card.classList.contains("pending")) {
@@ -726,7 +804,7 @@ function finishRun(info = {}) {
 
   const stderr = (info.stderr || "").trim();
   const exit = info.exitCode;
-  const slot = $("#stats-slot");
+  const slot = run.stats;
   let failed = true;
 
   if (info.runError) {
@@ -740,13 +818,20 @@ function finishRun(info = {}) {
     slot.append(errorCard("运行失败", why, stderr));
   } else if (resultFailed) {
     if (stderr && resultCard) {
-      resultCard.append(el("details", {}, el("summary", { text: "stderr" }), el("pre", { text: stderr })));
+      resultCard.append(el("details", { open: "" }, el("summary", { text: "stderr" }), el("pre", { text: stderr })));
     }
   } else {
     failed = false;
   }
+
+  // A live run that reported a session id can be continued, even if it failed
+  // (e.g. is_error). A run that never started keeps the previous session, if any.
+  if (run.cwd && run.sessionId) conversation = { sessionId: run.sessionId, cwd: run.cwd };
+  updateComposer();
+
   setRunStatus(failed ? "failed" : "finished", failed ? "失败" : "完成");
   followBottom();  // bring the final numbers or the error into view
+  if (conversation) $("#prompt").focus();
 }
 
 /* ---------- elapsed-time display on the status badge ---------- */
@@ -770,15 +855,33 @@ function currentMode() {
 
 function showMode() {
   const mode = currentMode();
-  $("#composer").className = "card mode-" + mode;
   $("#form-error").textContent = "";
   store("mode", mode);
+  updateComposer();
 }
 
-/** Open the SSE stream for a run and route its events. Used by both modes. */
+/**
+ * Show whether the next live run is a new session or a follow-up.
+ * In a follow-up the directory is locked: Claude Code keeps sessions per
+ * directory, so --resume only finds the session from the same cwd.
+ */
+function updateComposer() {
+  const live = currentMode() === "live";
+  const follow = live && conversation != null;
+  $("#composer").className = `card mode-${currentMode()}` + (follow ? " follow-up" : "");
+  $("#resume-id").textContent = conversation ? conversation.sessionId : "";
+  const cwd = $("#cwd");
+  cwd.readOnly = follow;
+  if (follow) cwd.value = conversation.cwd;
+  $("#prompt").placeholder = follow
+    ? "继续追问，Claude 会记得上面的对话（⌘/Ctrl + Enter 运行）"
+    : "要让 Claude Code 做什么？（⌘/Ctrl + Enter 运行）";
+  $("#run-btn").textContent = follow ? "继续" : "Run";
+}
+
+/** Open the SSE stream for the current run and route its events. Used by both modes. */
 function startStream(url) {
   if (source) source.close();
-  resetView();
   startTimer();
   following = true;
 
@@ -814,6 +917,8 @@ function startRun(e) {
   if (currentMode() === "replay") {
     const file = $("#sample").value;
     if (!file) { err.textContent = "请选择一个样例文件。"; return; }
+    clearConversation();  // a replay always stands alone
+    beginRun({});
     startStream(`/api/replay?file=${encodeURIComponent(file)}`);
     return;
   }
@@ -822,11 +927,21 @@ function startRun(e) {
   const cwd = $("#cwd").value.trim();
   if (!prompt) { err.textContent = "请输入提示词。"; $("#prompt").focus(); return; }
   if (!cwd) { err.textContent = "请填写工作目录。"; $("#cwd").focus(); return; }
-  store("cwd", cwd);
 
   const params = new URLSearchParams({ prompt, cwd });
+  let resumeId = null;
+  if (conversation) {
+    // Follow-up: continue the same session, added below the earlier runs.
+    resumeId = conversation.sessionId;
+    params.set("resume", resumeId);
+  } else {
+    // New session: start from an empty page.
+    clearConversation();
+    store("cwd", cwd);
+  }
+  beginRun({ prompt, cwd, resumeId });
+  $("#prompt").value = "";
   startStream(`/api/run?${params}`);
-  $("#run-prompt").append(el("div", { class: "user-prompt" }, el("span", { class: "who", text: `你 · ${cwd}` }), prompt));
 }
 
 /* localStorage only remembers conveniences (last mode and directory); it may be unavailable. */
@@ -852,6 +967,7 @@ $("#prompt").addEventListener("keydown", (e) => {
 for (const r of document.querySelectorAll("input[name=mode]")) r.onchange = showMode;
 if (recall("mode") === "replay") document.querySelector("input[name=mode][value=replay]").checked = true;
 $("#cwd").value = recall("cwd") || "";
+$("#new-session").onclick = () => { if (!source) { clearConversation(); $("#prompt").focus(); } };
 showMode();
 $("#show-quiet").onchange = (e) => document.body.classList.toggle("show-quiet", e.target.checked);
 $("#outline-btn").onclick = () => document.body.classList.toggle("outline-open");

@@ -2,7 +2,7 @@
 
 A local web page that drives Claude Code in headless mode and shows its JSON event stream live. See `SPEC.md`.
 
-Current progress: steps 1–3 (replay mode, rendering, tree view and outline, live mode with failure handling). Session resume (step 4) is not built yet.
+Current progress: steps 1–4 (replay mode, rendering, tree view and outline, live mode with failure handling, session resume).
 
 ## Requirements
 
@@ -27,6 +27,9 @@ Open http://127.0.0.1:8000 . Stop the server with Ctrl+C.
 - **Live**: type a prompt and an absolute working directory (`~` is fine), then click **Run** (or press ⌘/Ctrl+Enter). The server runs
   `claude -p "<prompt>" --output-format stream-json --verbose --dangerously-skip-permissions` in that directory.
   Because of `--dangerously-skip-permissions`, the agent can change files there without asking. Use a sandbox directory.
+- **Follow-ups**: after a live run ends, the box below the conversation says "继续会话 <session_id>". The next prompt runs with
+  `--resume <session_id>` and is added below the earlier runs, marked as resumed. The working directory is locked during a
+  conversation, because Claude Code stores sessions per directory. Click **开始新会话** to clear the page and start over.
 - **Replay**: pick a file from `samples/` to replay it at about one event every 0.3 s. Free and instant; use it for UI work.
 
 ## Files

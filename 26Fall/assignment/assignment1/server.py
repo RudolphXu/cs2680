@@ -97,8 +97,19 @@ def claude_env() -> dict:
 async def run(
     prompt: str = Query(..., min_length=1),
     cwd: str = Query(..., min_length=1, description="The agent's working directory"),
+    resume: str | None = Query(
+        None,
+        # Must not start with "-", or claude would read it as another option.
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,99}$",
+        description="session_id of an earlier run to continue (SPEC §6.5)",
+    ),
 ) -> StreamingResponse:
-    """Run Claude Code once and stream its events (SPEC §4)."""
+    """Run Claude Code once and stream its events (SPEC §4).
+
+    With `resume`, this is a follow-up run: `--resume <session_id>` continues
+    that conversation. Claude Code stores sessions per project directory, so
+    the follow-up must use the same `cwd` as the run it continues.
+    """
 
     async def stream():
         # --- 1. check the working directory ---------------------------------
@@ -120,8 +131,10 @@ async def run(
             yield sse({"exit_code": None, "stderr": ""}, event="end")
             return
 
-        args = [
-            claude_path, "-p", prompt,
+        args = [claude_path, "-p", prompt]
+        if resume:
+            args += ["--resume", resume]
+        args += [
             "--output-format", "stream-json",
             "--verbose",
             "--dangerously-skip-permissions",
