@@ -5,11 +5,21 @@
 - 镜像的 pip 源指向无效地址 127.0.0.1:9876，安装时指定 --index-url https://pypi.org/simple
 - 依赖装到 /opt/madsloop_deps（--target），用 PYTHONPATH 引用，不改动项目自身的 Python 环境
 - 固定 openai==2.48.0：openai 3.x 不支持 Python 3.9，不固定会导致不同任务用不同主版本
-- 模型配置通过环境变量：MADSLOOP_BASE_URL、MADSLOOP_API_KEY、MADSLOOP_MODEL
-- 服务商优先列表：Parasail → DeepInfra → Prime Intellect（待确认量化和工具支持）
+- 安装依赖和运行 harness 必须用同一个解释器（python3 -m pip）：pydantic-core 的 wheel
+  按 CPython 版本编译，用 3.9 的 pip 装、3.12 运行会导入失败
+- 模型配置通过环境变量：MADSLOOP_BASE_URL、MADSLOOP_API_KEY、MADSLOOP_MODEL；
+  未设置时回退到课程服务器：base_url 默认 https://api.cs2680.com/v1，
+  model 默认 qwen3.6-35b-a3b，API key 回退到 CS2680_API_KEY（评分环境只提供这个变量）
 - 服务商优先列表：Parasail → DeepInfra → Prime Intellect（均为 fp8、支持工具调用，已确认）；
   只允许这三家，要求支持请求中的所有参数（tools），量化限定 fp8；
-  排除 Darkbloom（fp4）、CoreWeave 和 SiliconFlow（不支持工具
+  排除 Darkbloom（fp4）、CoreWeave 和 SiliconFlow（不支持工具）
+- provider 路由参数（extra_body 的 provider）是 OpenRouter 专有的，只在 base_url 指向
+  OpenRouter 时发送；课程服务器不发送
+- bash 工具的子进程环境中去掉 /opt/madsloop_deps（PYTHONPATH）和 API key 变量：
+  避免 harness 的依赖（如 pydantic）污染仓库测试环境，也避免模型打印出 key
+- 整体运行时间上限 45 分钟，到时结束，run_end 的 reason 记为 time_limit
+- agent_task_input.json 中 problem_statement、requirements、interface 三个字段都被双重
+  JSON 编码（内容以字面量引号开头），传入前都要先解码（见 E）
 
 ## B. 工具
 - bash：在工作目录下运行；默认超时 120 秒，模型可指定更长，上限 600 秒；
@@ -42,7 +52,8 @@
 - 用户消息包含 problem_statement、requirements、interface 三部分（分标题），
   讲义只传了 problem_statement；requirements 里有隐藏测试依赖的具体函数名和行为
   （例：任务 0 要求新增 is_python_identifier）
-- requirements 和 interface 字段被双重 JSON 编码，传入前先解码
+- problem_statement、requirements 和 interface 三个字段都被双重 JSON 编码，传入前先解码；
+  mytest 任务中 requirements 和 interface 为 ""，为空时省略对应小节
 - 需要修改 run_task.sh 来传递这两个字段
 - 系统提示词：英文、简洁；包含角色和环境、规则（小改动、不改测试、临时文件放 /tmp、
   不安装新包）、工作流程（定位、复现、修改、验证、done）、区分自己引起的失败和原有失败
