@@ -2,3 +2,7 @@
 SWE-bench_Pro-os/
 pro_eval/
 patches.json
+__pycache__/
+.problem_*.txt
+.requirements_*.txt
+.interface_*.txt

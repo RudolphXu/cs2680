@@ -52,11 +52,34 @@ import json
 t = list(json.load(open('$TASKS_JSON')).values())[$IDX]
 print(t['instance_id'], t['docker_image'])
 ")
-python3 -c "
-import json
-t = list(json.load(open('$TASKS_JSON')).values())[$IDX]
-open('$REPO_ROOT/.problem_$IDX.txt', 'w').write(t['problem_statement'])
-"
+# madsLoop: pass problem_statement, requirements and interface, each decoded
+# from the extra JSON string encoding the task files carry ('"# Title:\n..."').
+# mytest tasks have "" for requirements/interface; that is passed through.
+python3 - "$TASKS_JSON" "$IDX" "$REPO_ROOT" <<'PYEOF'
+import json, sys
+tasks_json, idx, root = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+t = list(json.load(open(tasks_json)).values())[idx]
+
+def decode(text):
+    text = text or ""
+    for _ in range(2):
+        s = text.strip()
+        if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+            try:
+                v = json.loads(s)
+            except ValueError:
+                break
+            if isinstance(v, str):
+                text = v
+                continue
+        break
+    return text
+
+for key, name in (("problem_statement", "problem"), ("requirements", "requirements"),
+                  ("interface", "interface")):
+    with open("%s/.%s_%d.txt" % (root, name, idx), "w", encoding="utf-8") as fh:
+        fh.write(decode(t.get(key, "")))
+PYEOF
 
 echo "== task $IDX: $INSTANCE_ID" >&2
 echo "== image: $IMAGE" >&2
@@ -74,7 +97,12 @@ docker run --rm $PLATFORM_FLAG \
   --entrypoint bash \
   -v "$REPO_ROOT:/madsLoop" \
   -e CS2680_API_KEY="${CS2680_API_KEY:-}" \
+  -e MADSLOOP_BASE_URL="${MADSLOOP_BASE_URL:-}" \
+  -e MADSLOOP_API_KEY="${MADSLOOP_API_KEY:-}" \
+  -e MADSLOOP_MODEL="${MADSLOOP_MODEL:-}" \
   -e PROBLEM_FILE="/madsLoop/.problem_$IDX.txt" \
+  -e REQUIREMENTS_FILE="/madsLoop/.requirements_$IDX.txt" \
+  -e INTERFACE_FILE="/madsLoop/.interface_$IDX.txt" \
   -e LOG_DEST="/madsLoop/madsLoop_logs/$INSTANCE_ID" \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$IMAGE" \
@@ -115,23 +143,22 @@ docker run --rm $PLATFORM_FLAG \
           echo "== WARNING: baseline commit failed; continuing with dirty baseline" >&2
       fi
       # --- pick an interpreter for the HARNESS process -------------------
-      # The harness code may use modern Python syntax while the image default
-      # can be ancient (3.6/3.8). This selects who runs madsLoop.py ONLY — the
-      # agent`s bash tool still uses the image`s default python, so repo and
-      # test commands run in the task`s real environment.
+      # madsLoop is Python 3.9 compatible, so the image`s python3 is used
+      # whenever it is >= 3.9 (all provided images: 3.9.2-3.12.2). The SAME
+      # interpreter installs the deps (docker_env.sh), because pydantic-core
+      # wheels are per CPython version. This selects who runs madsLoop.py
+      # ONLY — the agent`s bash tool still uses the image`s default python.
       AGENT_PY=""
-      for c in python3.13 python3.12 python3.11 python3.10 \
-               /usr/local/bin/python3.13 /usr/local/bin/python3.12 \
-               /usr/local/bin/python3.11 /usr/local/bin/python3.10 \
-               /opt/miniconda3/bin/python /opt/conda/bin/python \
-               python3 python; do
+      for c in python3 /usr/local/bin/python3 /usr/bin/python3 \
+               python3.12 python3.11 python3.10 python3.9 \
+               /opt/miniconda3/bin/python /opt/conda/bin/python python; do
         if command -v "$c" >/dev/null 2>&1 && \
-           "$c" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+           "$c" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" 2>/dev/null; then
           AGENT_PY="$(command -v "$c")"; break
         fi
       done
       if [ -z "$AGENT_PY" ]; then
-        echo "== no Python >=3.10 in image; bootstrapping one with uv" >&2
+        echo "== no Python >=3.9 in image; bootstrapping one with uv" >&2
         python3 -m pip install -q uv || pip install -q uv
         UV_BIN="$(command -v uv 2>/dev/null || true)"
         [ -n "$UV_BIN" ] || UV_BIN="$(python3 -c "from uv import find_uv_bin; print(find_uv_bin())" 2>/dev/null || true)"
@@ -146,17 +173,20 @@ docker run --rm $PLATFORM_FLAG \
       fi
       echo "== harness interpreter: $AGENT_PY ($("$AGENT_PY" -V 2>&1))" >&2
       # --- your environment setup, then the agent (same invocation grading uses) ---
-      # Non-fatal: in non-Python images the default pip may be absent/broken;
-      # ensure_openai below covers the harness interpreter regardless.
-      bash /madsLoop/docker_env.sh || \
+      # docker_env.sh installs openai==2.48.0 into /opt/madsloop_deps with
+      # the harness interpreter. stdout is reserved for the patch -> >&2.
+      # Non-fatal: ensure_openai below retries with the same pin.
+      MADSLOOP_PYTHON="$AGENT_PY" bash /madsLoop/docker_env.sh >&2 || \
         echo "== WARNING: docker_env.sh failed; continuing (harness deps are ensured separately)" >&2
-      # docker_env.sh installs into the image default python; make sure the
-      # harness interpreter has the openai package too. Ladder: existing pip
-      # -> ensurepip -> get-pip.py -> install with image pip into a dir on
-      # PYTHONPATH (openai and its deps ship py3/abi3 wheels, so packages
-      # installed by an older pip import fine on the newer interpreter).
+      # Harness deps live outside the task environment; only the harness
+      # process sees them (the agent`s bash tool strips this entry again).
+      export PYTHONPATH="/opt/madsloop_deps${PYTHONPATH:+:$PYTHONPATH}"
+      OPENAI_PIN="openai==2.48.0"
+      have_openai() {
+        "$AGENT_PY" -c "import openai, sys; sys.exit(0 if openai.__version__ == \"2.48.0\" else 1)" 2>/dev/null
+      }
       ensure_openai() {
-        "$AGENT_PY" -c "import openai" 2>/dev/null && return 0
+        have_openai && return 0
         if ! "$AGENT_PY" -m pip --version >/dev/null 2>&1; then
           "$AGENT_PY" -m ensurepip --upgrade >/dev/null 2>&1 || true
         fi
@@ -165,16 +195,18 @@ docker run --rm $PLATFORM_FLAG \
           "$AGENT_PY" -c "import urllib.request as u; u.urlretrieve(\"https://bootstrap.pypa.io/get-pip.py\", \"/tmp/get-pip.py\")" \
             && "$AGENT_PY" /tmp/get-pip.py -q >/dev/null 2>&1 || true
         fi
-        "$AGENT_PY" -m pip install -q "openai>=1.0" 2>/dev/null || true
-        "$AGENT_PY" -c "import openai" 2>/dev/null && return 0
-        echo "== falling back: image pip install into /tmp/agentdeps" >&2
-        pip install -q --target /tmp/agentdeps "openai>=1.0"
-        export PYTHONPATH="/tmp/agentdeps${PYTHONPATH:+:$PYTHONPATH}"
-        "$AGENT_PY" -c "import openai"
+        "$AGENT_PY" -m pip install -q --target /opt/madsloop_deps "$OPENAI_PIN" >&2 2>/dev/null || true
+        have_openai && return 0
+        echo "== ERROR: cannot install $OPENAI_PIN for $AGENT_PY" >&2
+        return 1
       }
       ensure_openai
       cd /tmp
-      "$AGENT_PY" /madsLoop/madsLoop.py -p "$(cat "$PROBLEM_FILE")" --log "$WD"
+      # A harness failure must not abort the script: the logs and whatever
+      # diff exists are still collected below.
+      "$AGENT_PY" /madsLoop/madsLoop.py -p "$(cat "$PROBLEM_FILE")" \
+        --requirements-file "$REQUIREMENTS_FILE" --interface-file "$INTERFACE_FILE" \
+        --log "$WD" || echo "== WARNING: madsLoop exited with status $?" >&2
       if [ -d madsLoop_logs ]; then
         mkdir -p "$LOG_DEST" && cp -r madsLoop_logs/. "$LOG_DEST"/ && chown -R "$HOST_UID:$HOST_GID" /madsLoop/madsLoop_logs || true
       else
@@ -186,6 +218,6 @@ docker run --rm $PLATFORM_FLAG \
       git -C "$WD" diff' \
   > "$REPO_ROOT/model_patch_${INSTANCE_ID}.diff"
 
-rm -f "$REPO_ROOT/.problem_$IDX.txt"
+rm -f "$REPO_ROOT/.problem_$IDX.txt" "$REPO_ROOT/.requirements_$IDX.txt" "$REPO_ROOT/.interface_$IDX.txt"
 echo "== patch written to model_patch_${INSTANCE_ID}.diff" >&2
 head -20 "$REPO_ROOT/model_patch_${INSTANCE_ID}.diff" >&2
