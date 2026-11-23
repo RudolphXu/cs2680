@@ -10,10 +10,14 @@ DEFAULT_BASE_URL = "https://api.cs2680.com/v1"
 DEFAULT_MODEL = "qwen3.6-35b-a3b"
 
 # Provider routing is an OpenRouter-only request field; the course proxy
-# never receives it.
+# never receives it. Slugs verified against GET /api/v1/providers
+# (Parasail -> parasail, DeepInfra -> deepinfra, PrimeIntellect ->
+# primeintellect). A base slug matches all of that provider's endpoints
+# (e.g. deepinfra/fp8, deepinfra/fp8/flex); quantizations narrows to fp8.
+OPENROUTER_PROVIDERS = ["parasail", "deepinfra", "primeintellect"]
 OPENROUTER_PROVIDER = {
-    "order": ["parasail", "deepinfra", "prime-intellect"],
-    "only": ["parasail", "deepinfra", "prime-intellect"],
+    "order": OPENROUTER_PROVIDERS,
+    "only": OPENROUTER_PROVIDERS,
     "allow_fallbacks": False,
     "require_parameters": True,
     "quantizations": ["fp8"],

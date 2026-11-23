@@ -39,8 +39,9 @@ if [[ ! -f "$TASKS_JSON" ]]; then
   exit 1
 fi
 
-if [[ -z "${CS2680_API_KEY:-}" ]]; then
-  echo "error: CS2680_API_KEY is not set — export it before running (see 'The model API')" >&2
+# madsLoop also accepts MADSLOOP_API_KEY (e.g. OpenRouter for local testing).
+if [[ -z "${CS2680_API_KEY:-}" && -z "${MADSLOOP_API_KEY:-}" ]]; then
+  echo "error: neither CS2680_API_KEY nor MADSLOOP_API_KEY is set — export one before running (see 'The model API')" >&2
   exit 1
 fi
 
