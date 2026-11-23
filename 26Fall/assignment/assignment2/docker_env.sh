@@ -12,6 +12,9 @@
 # Everything goes to stderr: run_task.sh reserves stdout for the patch.
 set -euo pipefail
 exec 1>&2
+# The container runs as root; silence pip's "Running pip as the 'root' user"
+# warning (an env var, so pips too old to know it just ignore it).
+export PIP_ROOT_USER_ACTION=ignore
 
 DEPS=/opt/madsloop_deps
 PY="${MADSLOOP_PYTHON:-python3}"
