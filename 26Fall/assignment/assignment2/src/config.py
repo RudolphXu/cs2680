@@ -13,12 +13,14 @@ DEFAULT_MODEL = "qwen3.6-35b-a3b"
 # never receives it. Slugs verified against GET /api/v1/providers
 # (Parasail -> parasail, DeepInfra -> deepinfra, PrimeIntellect ->
 # primeintellect). A base slug matches all of that provider's endpoints
-# (e.g. deepinfra/fp8, deepinfra/fp8/flex); quantizations narrows to fp8.
+# (e.g. deepinfra/fp8, deepinfra/fp8/flex). These three are tried first;
+# when all are down, OpenRouter may fall back to other providers, but only
+# fp8 endpoints that support every request parameter (tools): that still
+# excludes Darkbloom (fp4) and CoreWeave / SiliconFlow (no tools).
 OPENROUTER_PROVIDERS = ["parasail", "deepinfra", "primeintellect"]
 OPENROUTER_PROVIDER = {
     "order": OPENROUTER_PROVIDERS,
-    "only": OPENROUTER_PROVIDERS,
-    "allow_fallbacks": False,
+    "allow_fallbacks": True,
     "require_parameters": True,
     "quantizations": ["fp8"],
 }

@@ -10,9 +10,12 @@
 - 模型配置通过环境变量：MADSLOOP_BASE_URL、MADSLOOP_API_KEY、MADSLOOP_MODEL；
   未设置时回退到课程服务器：base_url 默认 https://api.cs2680.com/v1，
   model 默认 qwen3.6-35b-a3b，API key 回退到 CS2680_API_KEY（评分环境只提供这个变量）
-- 服务商优先列表：Parasail → DeepInfra → Prime Intellect（均为 fp8、支持工具调用，已确认）；
-  只允许这三家，要求支持请求中的所有参数（tools），量化限定 fp8；
-  排除 Darkbloom（fp4）、CoreWeave 和 SiliconFlow（不支持工具）
+- 服务商优先列表：Parasail → DeepInfra → Prime Intellect（均为 fp8、支持工具调用，已确认；
+  OpenRouter 标识为 parasail、deepinfra、primeintellect，见 /api/v1/providers）；
+  provider 参数：order 为这三家，allow_fallbacks=true（三家都不可用时允许回退到其他服务商），
+  require_parameters=true（只路由到支持请求中所有参数即 tools 的端点），quantizations=["fp8"]；
+  回退时仍会排除 Darkbloom（fp4）、CoreWeave 和 SiliconFlow（不支持工具）。
+  不设 only：三家可用率较低（实测常只有 DeepInfra 在线），只允许这三家时容易整体失败
 - provider 路由参数（extra_body 的 provider）是 OpenRouter 专有的，只在 base_url 指向
   OpenRouter 时发送；课程服务器不发送
 - bash 工具的子进程环境中去掉 /opt/madsloop_deps（PYTHONPATH）和 API key 变量：
